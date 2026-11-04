@@ -16,7 +16,8 @@ import tempfile
 import threading
 import unittest
 
-from cartochron_gpsd import Adapter, WATCH
+from cartochron_gpsd import Adapter, MultiAdapter, WATCH
+from source_registry import Source
 
 
 class CartochronIntegrationTest(unittest.TestCase):
@@ -101,6 +102,81 @@ class CartochronIntegrationTest(unittest.TestCase):
                 self.assertEqual(rows[1]["measured_time"], "2026-11-03T13:00:01.250+00:00")
             finally:
                 store.close()
+
+
+    def test_two_gpsd_devices_remain_distinct_in_real_receiver(self):
+        """One WATCH connection and two input paths cannot merge source histories."""
+        cartochron = os.environ.get("CARTOCHRON_DIR")
+        if not cartochron:
+            self.skipTest("CARTOCHRON_DIR not set")
+        cartochron = Path(cartochron).resolve()
+        sys.path.insert(0, str(cartochron))
+        try:
+            from map_server import Handler, Server
+            from observation_store import ObservationStore
+        finally:
+            sys.path.remove(str(cartochron))
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "observations.sqlite3"
+            auth = "Basic " + base64.b64encode(b"operator:secret").decode("ascii")
+            receiver = Server(("127.0.0.1", 0), Handler,
+                              authorization=auth, database=database)
+            thread = threading.Thread(target=receiver.serve_forever, daemon=True)
+            thread.start()
+            first = receiver.store.enroll("Synthetic OnePlus")
+            second = receiver.store.enroll("Synthetic LG")
+            collector = MultiAdapter([
+                Source("oneplus", "udp://*:29998", first),
+                Source("lg", "udp://*:29999", second),
+            ], endpoint=f"http://127.0.0.1:{receiver.server_port}/api/position",
+                authorization=auth)
+            left, right = socket.socketpair()
+            failures = []
+            def stream():
+                try:
+                    with right:
+                        if right.recv(1024) != WATCH:
+                            raise AssertionError("no single WATCH subscription")
+                        reports = [
+                            {"class": "DEVICES", "devices": [
+                                {"path": "udp://*:29998"}, {"path": "udp://*:29999"}]},
+                            {"class": "TPV", "device": "udp://*:29998", "mode": 3,
+                             "time": "2026-11-03T13:00:00Z", "lat": 47, "lon": 28},
+                            {"class": "TPV", "device": "udp://*:29999", "mode": 3,
+                             "time": "2026-11-03T13:00:00Z", "lat": 48, "lon": 29, "eph": 4},
+                            {"class": "TPV", "device": "udp://*:29998", "mode": 3,
+                             "time": "2026-11-03T13:00:00Z", "lat": 49, "lon": 30},
+                        ]
+                        right.sendall(b"".join(json.dumps(r).encode() + b"\r\n" for r in reports))
+                except Exception as exc:
+                    failures.append(exc)
+            sender = threading.Thread(target=stream)
+            sender.start()
+            try:
+                with left:
+                    collector.consume(left)
+                sender.join(timeout=3)
+                self.assertFalse(sender.is_alive())
+                self.assertEqual(failures, [])
+                self.assertEqual(collector.adapters["udp://*:29998"].counts["accepted"], 1)
+                self.assertEqual(collector.adapters["udp://*:29999"].counts["accepted"], 1)
+                self.assertEqual(collector.adapters["udp://*:29998"].counts["duplicate"], 1)
+                runs = receiver.store.tracks()["tracks"]
+                self.assertEqual(len(runs), 2)
+                self.assertEqual({r["source_id"] for r in runs}, {first, second})
+                self.assertEqual({r["track_id"] for r in runs},
+                                 {a.track_id for a in collector.adapters.values()})
+            finally:
+                receiver.shutdown()
+                receiver.server_close()
+                thread.join(timeout=5)
+            with closing(ObservationStore(database)) as store:
+                rows = {r["source_id"]: store.history(r["track_id"])["points"]
+                        for r in runs}
+                self.assertEqual(rows[first][0]["lat"], 47)
+                self.assertEqual(rows[second][0]["lat"], 48)
+                self.assertEqual(rows[second][0]["accuracy_m"], 4)
 
 
 if __name__ == "__main__":

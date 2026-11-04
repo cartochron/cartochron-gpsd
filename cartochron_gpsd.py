@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Forward fresh GPSD TPV epochs to a Cartochron observation receiver.
 
-One process owns one recording run. It does not poll cached GPSD locations,
-replay failed HTTP submissions, or assert device identity on Cartochron's behalf.
+Single-source mode owns one recording run; registry mode owns one per device.
+Neither mode polls cached GPSD locations, replays failed HTTP submissions,
+nor asserts physical device identity on Cartochron's behalf.
 """
 
 import argparse
@@ -21,6 +22,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
+
+from source_registry import RegistryError, load_sources
 
 LOG = logging.getLogger("cartochron-gpsd")
 WATCH = b'?WATCH={"enable":true,"json":true}\n'
@@ -223,31 +226,94 @@ class Adapter:
                 LOG.info("Cartochron ingestion recovered")
             self._http_state = "accepted"
 
-    def consume(self, connection):
-        """Subscribe once and read bounded newline-delimited GPSD reports."""
-        connection.settimeout(15)
-        connection.sendall(WATCH)
-        with connection.makefile("rb") as stream:
-            while True:
-                line = stream.readline(MAX_LINE + 1)
-                if not line:
-                    return
-                if len(line) > MAX_LINE:
-                    raise ConnectionError("oversized GPSD report")
-                try:
-                    report = json.loads(line)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    LOG.warning("Skipping malformed GPSD report")
-                    continue
-                self.handle(report)
-
     def summary(self):
         return " ".join(f"{name}={count}" for name, count in self.counts.items())
+
+    def description(self):
+        return f"run={self.track_id} source={self.source_id or 'unassigned'}"
+
+    def consume(self, connection):
+        """Subscribe once and read bounded newline-delimited GPSD reports."""
+        consume_reports(connection, self.handle)
+
+
+def consume_reports(connection, handle):
+    """Read GPSD reports through one bounded WATCH subscription."""
+    connection.settimeout(15)
+    connection.sendall(WATCH)
+    with connection.makefile("rb") as stream:
+        while True:
+            line = stream.readline(MAX_LINE + 1)
+            if not line:
+                return
+            if len(line) > MAX_LINE:
+                raise ConnectionError("oversized GPSD report")
+            try:
+                report = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                LOG.warning("Skipping malformed GPSD report")
+                continue
+            handle(report)
+
+
+MAX_UNKNOWN = 16  # Bound diagnostic state even with hostile device names.
+
+
+class MultiAdapter:
+    """One WATCH subscription; independent run and epoch state per GPSD input."""
+
+    def __init__(self, sources, *, endpoint, authorization=None, send=None):
+        if not sources:
+            raise ConfigurationError("at least one registered GPSD source is required")
+        self.adapters = {
+            source.device: Adapter(endpoint=endpoint, authorization=authorization,
+                                   source_id=source.source_id, device=source.device, send=send)
+            for source in sources
+        }
+        if len(self.adapters) != len(sources):
+            raise ConfigurationError("duplicate GPSD device")
+        self.unknown = set()
+        self.sources = sources
+
+    def description(self):
+        return f"registered_sources={len(self.adapters)}"
+
+    def summary(self):
+        totals = {key: 0 for key in next(iter(self.adapters.values())).counts}
+        for adapter in self.adapters.values():
+            for key, count in adapter.counts.items():
+                totals[key] += count
+        return " ".join(f"{name}={count}" for name, count in totals.items())
+
+    def handle(self, report):
+        if not isinstance(report, dict):
+            return
+        kind = report.get("class")
+        if kind in ("ERROR", "WATCH"):
+            next(iter(self.adapters.values())).handle(report)
+            return
+        if kind != "TPV":
+            return
+        device = report.get("device")
+        if not isinstance(device, str) or device not in self.adapters:
+            key = device if isinstance(device, str) else None
+            if key not in self.unknown and len(self.unknown) < MAX_UNKNOWN:
+                LOG.warning("Ignoring unregistered or untagged GPSD input")
+                self.unknown.add(key)
+            return
+        self.adapters[device].handle(report)
+
+    def consume(self, connection):
+        consume_reports(connection, self.handle)
 
 
 def run(adapter, host, port, *, connect=socket.create_connection, sleep=time.sleep):
     """Retry GPSD transport failures; configuration errors stop the process."""
-    LOG.info("Started run=%s source=%s", adapter.track_id, adapter.source_id or "unassigned")
+    LOG.info("Started %s", adapter.description())
+    if isinstance(adapter, MultiAdapter):
+        for source in adapter.sources:
+            run_id = adapter.adapters[source.device].track_id
+            LOG.info("Registered %s run=%s source=%s", source.name, run_id, source.source_id)
     state = None
     try:
         while True:
@@ -268,14 +334,15 @@ def run(adapter, host, port, *, connect=socket.create_connection, sleep=time.sle
                 state = "disconnected"
             sleep(RECONNECT_SECONDS)
     finally:
-        LOG.info("Stopped run=%s %s", adapter.track_id, adapter.summary())
+        LOG.info("Stopped %s %s", adapter.description(), adapter.summary())
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpsd-host", default="127.0.0.1", help="GPSD host (use SSH forwarding for a VPS)")
     parser.add_argument("--gpsd-port", type=int, default=2947, help="GPSD TCP port")
-    parser.add_argument("--device", help="GPSD device path; required if GPSD has multiple devices")
+    parser.add_argument("--device", help="GPSD device path (single-source mode)")
+    parser.add_argument("--sources", help="TOML GPSD device -> enrolled source registry (multi-source mode)")
     parser.add_argument("--endpoint", default="http://127.0.0.1:8765/api/position")
     parser.add_argument("--auth-file", help="private file containing Cartochron user:password")
     parser.add_argument("--source-id", help="existing Cartochron-enrolled source ID")
@@ -285,11 +352,17 @@ def main(argv=None):
     try:
         if not 1 <= args.gpsd_port <= 65535:
             raise ConfigurationError("GPSD port must be 1..65535")
-        adapter = Adapter(endpoint=args.endpoint,
-                          authorization=read_auth_file(args.auth_file) if args.auth_file else None,
-                          track_id=args.track_id, source_id=args.source_id, device=args.device)
+        authorization = read_auth_file(args.auth_file) if args.auth_file else None
+        if args.sources:
+            if args.device is not None or args.source_id is not None or args.track_id is not None:
+                raise ConfigurationError("--sources cannot be combined with --device, --source-id or --track-id")
+            adapter = MultiAdapter(load_sources(args.sources), endpoint=args.endpoint,
+                                   authorization=authorization)
+        else:
+            adapter = Adapter(endpoint=args.endpoint, authorization=authorization,
+                              track_id=args.track_id, source_id=args.source_id, device=args.device)
         run(adapter, args.gpsd_host, args.gpsd_port)
-    except (ConfigurationError, OSError) as exc:
+    except (ConfigurationError, RegistryError, OSError) as exc:
         parser.exit(1, f"cartochron-gpsd: {exc}\n")
     except KeyboardInterrupt:
         return 0
