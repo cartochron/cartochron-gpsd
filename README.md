@@ -6,11 +6,28 @@ TPV reports and posts observations to Cartochron's existing `/api/position`
 endpoint. Cartochron can run **locally** while GPSD runs on a **VPS**, reached
 through an SSH tunnel.
 
-Python 3, standard library only. No GPS hardware, libgps bindings, Metasploit,
-Docker, or extra service is needed to run the tests. This repository does not
+Python 3.11 or newer, standard library only. No GPS hardware, libgps bindings,
+Metasploit, Docker, or extra service is needed to run the unit tests. This repository does not
 install or change the Cartochron receiver.
 
-## Quick start
+## Deployment with multiple phones
+
+For **two or more known GPSD inputs**, use the [two-service Docker Compose
+walkthrough](docs/compose.md). It runs one GPSD and one `cartochron-gpsd`
+collector, restarts them after crashes, and uses a persistent `sources.toml`
+registry to map independent GPSD channels to previously enrolled Cartochron
+sources. **No process or CLI invocation per phone.** The same registry selects
+GPSD's UDP listeners and the collector's per-device recording state.
+
+The registry is configured once per device, not each time a feed reconnects.
+UDP does not authenticate the phone behind a port; the association is with an
+input channel and must be protected at the network boundary.
+
+Run `make check` for unit tests and `make check-integration
+CARTOCHRON_DIR=../cartochron` for a synthetic two-device end-to-end test.
+The original single-source CLI remains supported below.
+
+## Quick start (single GPSD source)
 
 Start the Cartochron receiver from its own checkout:
 
@@ -62,8 +79,9 @@ not a path on the local computer:
 python3 cartochron_gpsd.py --gpsd-port 12947 --device /dev/ttyUSB0
 ```
 
-If GPSD lists more than one device, `--device` is required. Otherwise the
-adapter locks the recording run to the first identifiable device. It refuses
+In single-source mode, if GPSD lists more than one device, `--device` is
+required. For multiple registered devices, use `--sources sources.toml` instead.
+Otherwise the adapter locks the recording run to the first identifiable device. It refuses
 to silently switch that run to another device. An untagged TPV is accepted
 only when GPSD advertises exactly one device.
 
@@ -103,7 +121,7 @@ receiver's documented `docker compose exec cartochron python3 sources.py ...`
 form instead. **A source ID is not an authentication credential, and GPSD
 identification is not proof of physical device ownership.**
 
-An optional `--track-id` can set a recording-run ID explicitly. Normally,
+An optional `--track-id` can set a single recording-run ID explicitly. Normally,
 leave it unset: a new process should be a new run, while source identity
 remains stable across runs.
 
@@ -132,6 +150,10 @@ be inaccurate before satellite synchronization, and its error estimate has
 uncertain confidence; neither field should be interpreted as independently
 verified. Unknown `eph` remains absent, never inferred from `epx`/`epy`.
 See [GPSD's JSON protocol documentation](https://gpsd.io/gpsd_json.html).
+
+Each configured source in multi-device mode gets its own independent
+recording run and deduplication state. A new collector process starts new
+runs, while a GPSD reconnect within that process retains them.
 
 A disconnect creates a gap in observable history. We do not backfill it, hold
 an offline queue, or resend an observation when an HTTP response is lost:
