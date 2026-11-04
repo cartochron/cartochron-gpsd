@@ -15,11 +15,17 @@ install or change the Cartochron receiver.
 For **two or more known GPSD inputs**, use the [two-service Docker Compose
 walkthrough](docs/compose.md). It runs one GPSD and one `cartochron-gpsd`
 collector, restarts them after crashes, and uses a persistent `sources.toml`
-registry to map independent GPSD channels to previously enrolled Cartochron
+registry to map independent GPSD channels to optional enrolled Cartochron
 sources. **No process or CLI invocation per phone.** The same registry selects
 GPSD's UDP listeners and the collector's per-device recording state.
 
-The registry is configured once per device, not each time a feed reconnects.
+`sources.toml.example` starts with **empty source IDs** for experiments;
+each configured channel gets a separate automatically named run, without
+pretending to have persistent enrolled identity. To group subsequent runs by
+source, enroll the channel once and configure its `src_...` identifier. An
+empty or omitted source ID never prevents GPSD from starting.
+
+The registry is configured once per channel, not each time a feed reconnects.
 UDP does not authenticate the phone behind a port; the association is with an
 input channel and must be protected at the network boundary.
 

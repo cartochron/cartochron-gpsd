@@ -1,10 +1,13 @@
 """Source registry is an explicit authority map, not device fingerprinting."""
 
 import tempfile
+from contextlib import redirect_stdout
+import io
+from unittest.mock import patch
 from pathlib import Path
 import unittest
 
-from gpsd_launcher import device_arguments
+from gpsd_launcher import device_arguments, main as gpsd_main
 from source_registry import RegistryError, Source, load_sources
 
 A = 'src_' + 'a' * 24
@@ -30,12 +33,24 @@ source_id = "{B}"
             ('oneplus', 'udp://*:29998', A), ('lg', 'udp://*:29999', B)])
 
     def test_missing_or_guessed_identity_fails(self):
-        for content in ('', '[sources.oneplus]\ndevice="udp://*:29998"\n',
+        for content in ('',
                         '[sources.oneplus]\ndevice="udp://*:29998"\nsource_id="oneplus"\n',
                         '[sources.oneplus]\ndevice="udp://*:29998"\nsource_id="src_123"\n',
                         '[sources.oneplus]\ndevice="udp://*:29998"\nsource_id="' + A + '"\nlabel="extraneous"\n'):
             with self.subTest(content=content), self.assertRaises(RegistryError):
                 self.load(content)
+
+    def test_unassigned_channels_allow_empty_or_omitted_source_id(self):
+        sources = self.load('''[sources.oneplus]
+device = "udp://*:29998"
+source_id = ""
+[sources.lg]
+device = "udp://*:29999"
+''')
+        self.assertEqual([(s.name, s.source_id) for s in sources],
+                         [("oneplus", None), ("lg", None)])
+        self.assertEqual(device_arguments(sources, "29998-30017"),
+                         ["udp://*:29998", "udp://*:29999"])
 
     def test_duplicate_port_or_source_id_is_rejected(self):
         for device, sid in [('udp://*:29998', B), ('udp://*:29999', A)]:
@@ -70,6 +85,16 @@ source_id="{sid}"
                        Source('x', 'udp://127.0.0.1:29998', A)):
             with self.subTest(source=source), self.assertRaises(RegistryError):
                 device_arguments([source], '29998-30017')
+
+    def test_preflight_validates_empty_id_without_starting_gpsd(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'sources.toml'
+            path.write_text('[sources.lab]\ndevice="udp://*:29998"\nsource_id=""\n')
+            output = io.StringIO()
+            with patch('gpsd_launcher.os.execvp') as spawn, redirect_stdout(output):
+                gpsd_main(['--sources', str(path), '--check'])
+            spawn.assert_not_called()
+            self.assertIn('Validated 1 GPSD input channels', output.getvalue())
 
     def test_accepts_up_to_256_sources_without_duplicate_devices(self):
         content = ''.join(f'[sources.device_{i}]\ndevice="udp://*:{30000+i}"\n'

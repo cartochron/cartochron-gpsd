@@ -11,19 +11,25 @@ Docker Desktop or a shared/untrusted Docker host.
 
 ## First-time setup
 
-1. Start the authenticated, persistent Cartochron receiver using the steps in
+1. Start an authenticated, persistent Cartochron receiver using
    [Cartochron's operations guide](https://github.com/cartochron/cartochron/blob/sources-identities/docs/operations.md).
-   In its repository, enroll the devices once:
+   **For experiments, source enrollment is optional.** Empty or absent
+   `source_id` fields create separate *unassigned* runs, with IDs like
+   `oneplus-<random suffix>`. They are still separate recording runs but are
+   not permanently associated with an enrolled source.
+
+   When you want persistent source grouping across collector restarts, enroll
+   the input channels once (while Cartochron is running):
 
    ```sh
    docker compose exec cartochron python3 sources.py --db /data/observations.sqlite3 add 'OnePlus'
    docker compose exec cartochron python3 sources.py --db /data/observations.sqlite3 add 'LG'
    ```
 
-   Note the two returned `src_...` IDs. Enrollment is **not** repeated when a
-   phone reconnects or the collector restarts. The receiver currently has no
-   trusted source-enrollment HTTP API, so an unknown UDP sender must not be
-   allowed to create a new permanent source automatically.
+   The enrollment commands above run from the **Cartochron** repository. Copy
+   the returned `src_...` values into the `sources.toml` entries before
+   starting a new collector run. Enrollment is not required for temporary
+   phones, and no UDP sender can create an enrolled source by itself.
 
 2. In the `cartochron-gpsd` repository:
 
@@ -32,18 +38,21 @@ Docker Desktop or a shared/untrusted Docker host.
    cp .env.example .env
    ```
 
-   Replace both illustrative `source_id` values in `sources.toml` with the
-   actual enrolled IDs. The `device` field names the GPSD input channel:
+   The example registry works as-is for two *unassigned* lab inputs:
 
    ```toml
    [sources.oneplus]
    device = "udp://*:29998"
-   source_id = "src_0123456789abcdef01234567"  # replace
+   source_id = ""  # unassigned; may also be omitted
 
    [sources.lg]
    device = "udp://*:29999"
-   source_id = "src_abcdef0123456789abcdef01"  # replace
+   source_id = ""
    ```
+
+   For an enrolled input, replace its empty value with the actual registered
+   `src_...` ID. Restart the collector to begin a new run with that source
+   association; previously recorded unassigned runs stay unassigned.
 
 3. Edit `.env`: set `GPSD_BIND_IP` to your host's **trusted LAN IPv4 address**,
    such as `192.168.1.20`, so your authorized phones can send NMEA over UDP.
@@ -56,11 +65,16 @@ Docker Desktop or a shared/untrusted Docker host.
    Bring up the new stack:
 
    ```sh
+   make check-config           # Validates source registry, without starting GPSD
    docker compose config -q
    docker compose up --build -d
    docker compose ps
    docker compose logs -f gpsd collector
    ```
+
+   `make check-config` uses the default `29998-30017` range; if your `.env`
+   uses a different range, pass it explicitly as
+   `make check-config GPSD_UDP_PORT_RANGE=FIRST-LAST`.
 
    Point the OnePlus forwarder to `GPSD_BIND_IP:29998/udp` and the LG forwarder
    to `GPSD_BIND_IP:29999/udp`. **Never direct two phones to the same input
@@ -97,11 +111,22 @@ For a crash rehearsal, use `docker kill` on the relevant test container and
 check `docker compose ps` and the logs. Ordinary `docker compose stop` is an
 intentional stop and disables automatic restart until `docker compose start`.
 
-A wrong receiver credential or unrecognized source ID causes the collector to
-exit instead of treating HTTP 401/422 as a transient network failure. Because
-Compose restarts failed services, **stop the collector** before correcting a
-permanent configuration error, then restart after the fix. It does not queue or
-replay unacknowledged observations.
+A wrong receiver credential, malformed nonempty source ID, or unrecognized
+source ID causes a configuration failure. `restart: unless-stopped` also
+restarts a container on *permanent* configuration errors: repeated short logs
+are not proof of GPSD/network failure. **Stop both services before correcting
+`source_id` or port configuration**:
+
+```sh
+docker compose stop gpsd collector
+# Edit sources.toml or .env; source_id = "" is allowed for lab use.
+docker compose up -d
+```
+
+For a receiver HTTP 401/422, correct the credentials or enrollment before
+restarting. The collector does not queue or replay unacknowledged observations.
+The named registry source identifies a UDP input channel, not an authenticated
+physical phone.
 
 ## Growing beyond two input channels
 

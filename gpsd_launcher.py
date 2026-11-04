@@ -31,12 +31,16 @@ def device_arguments(sources, port_range):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sources", required=True, help="shared TOML source registry")
+    parser.add_argument("--check", action="store_true", help="validate registry without starting GPSD")
     args = parser.parse_args(argv)
     try:
         sources = load_sources(args.sources)
         paths = device_arguments(sources, os.environ.get("GPSD_UDP_PORT_RANGE", "29998-30017"))
     except RegistryError as exc:
         parser.error(str(exc))
+    if args.check:
+        print(f"Validated {len(paths)} GPSD input channels")
+        return
     os.execvp("gpsd", ["gpsd", "-N", "-n", "-G", "-F", "/run/gpsd.sock", *paths])
 
 

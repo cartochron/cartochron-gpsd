@@ -1,11 +1,11 @@
-# GPSD paths are input CHANNELS, not authenticated identities of phones.
-# Obtain each source_id ONCE from Cartochron's sources.py enrollment CLI.
-# The same file configures GPSD's input list and the collector's routing.
+# Each UDP port identifies a GPSD input CHANNEL, not a verified phone.
+# Experiments can leave source_id blank or omit it entirely.
+# After enrolling a permanent Cartochron source, put its src_ ID here.
 
 [sources.oneplus]
 device = "udp://*:29998"
-source_id = "src_0123456789abcdef01234567"
+source_id = ""
 
 [sources.lg]
 device = "udp://*:29999"
-source_id = "src_abcdef0123456789abcdef01"
+source_id = ""

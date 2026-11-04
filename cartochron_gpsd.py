@@ -267,7 +267,8 @@ class MultiAdapter:
             raise ConfigurationError("at least one registered GPSD source is required")
         self.adapters = {
             source.device: Adapter(endpoint=endpoint, authorization=authorization,
-                                   source_id=source.source_id, device=source.device, send=send)
+                                   source_id=source.source_id, device=source.device,
+                                   track_id=f"{source.name[:44]}-{uuid4().hex[:12]}", send=send)
             for source in sources
         }
         if len(self.adapters) != len(sources):
@@ -313,7 +314,8 @@ def run(adapter, host, port, *, connect=socket.create_connection, sleep=time.sle
     if isinstance(adapter, MultiAdapter):
         for source in adapter.sources:
             run_id = adapter.adapters[source.device].track_id
-            LOG.info("Registered %s run=%s source=%s", source.name, run_id, source.source_id)
+            LOG.info("Registered %s run=%s source=%s", source.name, run_id,
+                     source.source_id or "unassigned")
     state = None
     try:
         while True:

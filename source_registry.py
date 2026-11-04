@@ -1,4 +1,4 @@
-"""Explicit GPSD input -> enrolled Cartochron source mappings.
+"""Explicit GPSD input -> optional enrolled Cartochron source mappings.
 
 A GPSD device path identifies an acquisition channel, not a physical sender.
 """
@@ -21,11 +21,11 @@ class RegistryError(ValueError):
 class Source:
     name: str
     device: str
-    source_id: str
+    source_id: str | None
 
 
 def load_sources(filename):
-    """Read a bounded, unambiguous registry; never invent source IDs."""
+    """Read a bounded channel registry; unenrolled inputs remain unassigned."""
     try:
         with Path(filename).open("rb") as stream:
             document = tomllib.load(stream)
@@ -40,17 +40,23 @@ def load_sources(filename):
     for name, entry in entries.items():
         if not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(entry, dict):
             raise RegistryError("invalid source name or mapping")
-        if set(entry) != {"device", "source_id"}:
-            raise RegistryError(f"{name}: expected device and source_id only")
-        device, source_id = entry["device"], entry["source_id"]
+        if set(entry) - {"device", "source_id"} or "device" not in entry:
+            raise RegistryError(f"{name}: expected device and optional source_id only")
+        device, source_id = entry["device"], entry.get("source_id")
         if (not isinstance(device, str) or not 1 <= len(device) <= 255 or
                 any(ord(ch) < 33 or ord(ch) > 126 for ch in device)):
             raise RegistryError(f"{name}: invalid GPSD device path")
-        if not isinstance(source_id, str) or not SOURCE_ID.fullmatch(source_id):
-            raise RegistryError(f"{name}: source_id must be an enrolled src_ identifier")
-        if device in devices or source_id in identities:
+        # Omitted/empty means an experimental, unassigned recording run.
+        # Never infer or auto-create a persistent source from UDP transport.
+        if source_id == "":
+            source_id = None
+        if source_id is not None and (not isinstance(source_id, str) or
+                                      not SOURCE_ID.fullmatch(source_id)):
+            raise RegistryError(f"{name}: source_id must be an enrolled src_ identifier or empty")
+        if device in devices or (source_id is not None and source_id in identities):
             raise RegistryError(f"{name}: duplicate GPSD device or source_id")
         devices.add(device)
-        identities.add(source_id)
+        if source_id is not None:
+            identities.add(source_id)
         result.append(Source(name, device, source_id))
     return result

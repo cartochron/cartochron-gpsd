@@ -104,6 +104,44 @@ class CartochronIntegrationTest(unittest.TestCase):
                 store.close()
 
 
+    def test_unassigned_lab_channels_write_separate_runs(self):
+        """Blank source IDs are valid: they do not trigger automatic enrollment."""
+        cartochron = os.environ.get("CARTOCHRON_DIR")
+        if not cartochron:
+            self.skipTest("CARTOCHRON_DIR not set")
+        sys.path.insert(0, str(Path(cartochron).resolve()))
+        try:
+            from map_server import Handler, Server
+        finally:
+            sys.path.remove(str(Path(cartochron).resolve()))
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "observations.sqlite3"
+            receiver = Server(("127.0.0.1", 0), Handler, database=database)
+            thread = threading.Thread(target=receiver.serve_forever, daemon=True)
+            thread.start()
+            collector = MultiAdapter([
+                Source("oneplus", "udp://*:29998", None),
+                Source("lg", "udp://*:29999", None)],
+                endpoint=f"http://127.0.0.1:{receiver.server_port}/api/position")
+            try:
+                for path, lat in [("udp://*:29998", 47), ("udp://*:29999", 48)]:
+                    collector.handle({"class": "TPV", "device": path, "mode": 3,
+                                      "time": "2026-11-03T13:00:00Z", "lat": lat, "lon": 28})
+                runs = receiver.store.tracks()["tracks"]
+                self.assertEqual(len(runs), 2)
+                self.assertTrue(all(r["source_id"] is None for r in runs))
+                self.assertEqual(receiver.store.sources()["sources"], [])
+                self.assertEqual({p["track_id"] for p in runs},
+                                 {a.track_id for a in collector.adapters.values()})
+                self.assertEqual({r["track_id"]: receiver.store.history(r["track_id"])["points"][0]["lat"]
+                                  for r in runs},
+                                 {a.track_id: lat for a, lat in
+                                  zip(collector.adapters.values(), (47, 48))})
+            finally:
+                receiver.shutdown()
+                receiver.server_close()
+                thread.join(timeout=5)
+
     def test_two_gpsd_devices_remain_distinct_in_real_receiver(self):
         """One WATCH connection and two input paths cannot merge source histories."""
         cartochron = os.environ.get("CARTOCHRON_DIR")

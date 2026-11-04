@@ -42,6 +42,22 @@ class MultiTest(unittest.TestCase):
         self.assertEqual(self.adapter.summary().split(' '),
                          ['accepted=3', 'rejected=0', 'unavailable=0', 'errors=0', 'duplicate=1'])
 
+    def test_unassigned_sources_remain_distinct_runs_without_source_ids(self):
+        reports = []
+        adapter = MultiAdapter([
+            Source('oneplus', 'udp://*:29998', None),
+            Source('lg', 'udp://*:29999', None)],
+            endpoint='http://127.0.0.1:8765/api/position', send=reports.append)
+        adapter.handle(tpv('udp://*:29998'))
+        adapter.handle(tpv('udp://*:29999'))
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(all('source_id' not in report for report in reports))
+        self.assertNotEqual(reports[0]['track_id'], reports[1]['track_id'])
+        self.assertRegex(reports[0]['track_id'], r'^oneplus-[0-9a-f]{12}$')
+        self.assertRegex(reports[1]['track_id'], r'^lg-[0-9a-f]{12}$')
+        adapter.handle(tpv('udp://*:29998'))  # Duplicate source epoch.
+        self.assertEqual(len(reports), 2)
+
     def test_unknown_and_untagged_reports_cannot_be_attributed(self):
         with self.assertLogs('cartochron-gpsd', level='WARNING') as logs:
             self.adapter.handle(tpv('udp://*:30000'))
