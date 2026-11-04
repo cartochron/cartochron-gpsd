@@ -299,6 +299,26 @@ class HttpTransportTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data)["provider"], "gpsd")
         self.assertEqual(adapter.counts["accepted"], 1)
 
+    def test_channel_submission_requires_receiver_acknowledgment(self):
+        class Response:
+            status = 201
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self, _): return self.body
+        adapter = Adapter(endpoint="https://example.test/api/position",
+                          channel_id="lab.oneplus")
+        with patch("cartochron_gpsd.urlopen", lambda *_a, **_kw: Response(b'{}')):
+            with self.assertRaisesRegex(ConfigurationError, "upgrade Cartochron"):
+                adapter.handle(tpv())
+        self.assertEqual(adapter.counts["accepted"], 0)
+        self.assertEqual(adapter.counts["rejected"], 1)
+        adapter = Adapter(endpoint="https://example.test/api/position",
+                          channel_id="lab.oneplus")
+        with patch("cartochron_gpsd.urlopen", lambda *_a, **_kw: Response(b'{"channel_id":"lab.oneplus"}')):
+            adapter.handle(tpv())
+        self.assertEqual(adapter.counts["accepted"], 1)
+
     def test_http_401_terminates_instead_of_repeating_forever(self):
         def urlopen(req, timeout):
             raise HTTPError(req.full_url, 401, "Unauthorized", {}, None)

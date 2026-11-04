@@ -34,6 +34,7 @@ class MultiTest(unittest.TestCase):
         self.adapter.handle(tpv('udp://*:29999', T1, lat=48.5))
         self.assertEqual(len(self.sent), 3)
         self.assertEqual([x['source_id'] for x in self.sent], [A, B, B])
+        self.assertEqual([x['channel_id'] for x in self.sent], ['a', 'b', 'b'])
         self.assertEqual([x['lat'] for x in self.sent], [47, 48, 48.5])
         runs = [x['track_id'] for x in self.sent]
         self.assertNotEqual(runs[0], runs[1])
@@ -52,6 +53,7 @@ class MultiTest(unittest.TestCase):
         adapter.handle(tpv('udp://*:29999'))
         self.assertEqual(len(reports), 2)
         self.assertTrue(all('source_id' not in report for report in reports))
+        self.assertEqual([r['channel_id'] for r in reports], ['oneplus', 'lg'])
         self.assertNotEqual(reports[0]['track_id'], reports[1]['track_id'])
         self.assertRegex(reports[0]['track_id'], r'^oneplus-[0-9a-f]{12}$')
         self.assertRegex(reports[1]['track_id'], r'^lg-[0-9a-f]{12}$')

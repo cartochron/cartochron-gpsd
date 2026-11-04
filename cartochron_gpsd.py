@@ -123,7 +123,7 @@ class Adapter:
     """Keep the receiver protocol separate from GPSD's streaming lifecycle."""
 
     def __init__(self, *, endpoint, authorization=None, track_id=None, source_id=None, device=None,
-                 send=None):
+                 channel_id=None, send=None):
         self.endpoint = endpoint_url(endpoint)
         self.authorization = authorization
         self.track_id = track_id or str(uuid4())
@@ -132,6 +132,9 @@ class Adapter:
         if source_id is not None and not SOURCE_ID.fullmatch(source_id):
             raise ConfigurationError("invalid enrolled source ID")
         self.source_id = source_id
+        if channel_id is not None and not TRACK_ID.fullmatch(channel_id):
+            raise ConfigurationError("invalid channel ID")
+        self.channel_id = channel_id
         self.device = device
         self.selected_device = device
         self.available_devices = None
@@ -149,7 +152,7 @@ class Adapter:
         try:
             with urlopen(request, timeout=5) as response:
                 status = response.status
-                response.read(4096)
+                body = response.read(4096)
         except HTTPError as exc:
             status = exc.code
         except (URLError, OSError, TimeoutError) as exc:
@@ -158,6 +161,15 @@ class Adapter:
             if status in (400, 401, 403, 404, 409, 422):
                 raise ConfigurationError(f"receiver rejected observation (HTTP {status}); check credentials, source enrollment and endpoint")
             raise ConnectionError(f"HTTP {status}")
+        # Older receivers ignore unknown request fields. Do not silently record
+        # a whole session whose configured channel identity was discarded.
+        if "channel_id" in observation:
+            try:
+                receipt = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ConfigurationError("receiver did not acknowledge channel_id; upgrade Cartochron") from exc
+            if not isinstance(receipt, dict) or receipt.get("channel_id") != observation["channel_id"]:
+                raise ConfigurationError("receiver did not acknowledge channel_id; upgrade Cartochron")
 
     def handle(self, report):
         """Handle one GPSD JSON object; no network read or artificial polling."""
@@ -210,6 +222,8 @@ class Adapter:
         observation["track_id"] = self.track_id
         if self.source_id is not None:
             observation["source_id"] = self.source_id
+        if self.channel_id is not None:
+            observation["channel_id"] = self.channel_id
         try:
             self.send(observation)
         except ConfigurationError:
@@ -268,6 +282,7 @@ class MultiAdapter:
         self.adapters = {
             source.device: Adapter(endpoint=endpoint, authorization=authorization,
                                    source_id=source.source_id, device=source.device,
+                                   channel_id=source.channel_id if source.channel_id is not None else source.name,
                                    track_id=f"{source.name[:44]}-{uuid4().hex[:12]}", send=send)
             for source in sources
         }
@@ -314,7 +329,8 @@ def run(adapter, host, port, *, connect=socket.create_connection, sleep=time.sle
     if isinstance(adapter, MultiAdapter):
         for source in adapter.sources:
             run_id = adapter.adapters[source.device].track_id
-            LOG.info("Registered %s run=%s source=%s", source.name, run_id,
+            LOG.info("Registered %s channel=%s run=%s source=%s", source.name,
+                     adapter.adapters[source.device].channel_id, run_id,
                      source.source_id or "unassigned")
     state = None
     try:
@@ -348,6 +364,7 @@ def main(argv=None):
     parser.add_argument("--endpoint", default="http://127.0.0.1:8765/api/position")
     parser.add_argument("--auth-file", help="private file containing Cartochron user:password")
     parser.add_argument("--source-id", help="existing Cartochron-enrolled source ID")
+    parser.add_argument("--channel-id", help="stable configured input ID (single-source mode)")
     parser.add_argument("--track-id", help="recording run ID (random per invocation by default)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="[cartochron-gpsd] %(levelname)s %(message)s")
@@ -356,13 +373,15 @@ def main(argv=None):
             raise ConfigurationError("GPSD port must be 1..65535")
         authorization = read_auth_file(args.auth_file) if args.auth_file else None
         if args.sources:
-            if args.device is not None or args.source_id is not None or args.track_id is not None:
-                raise ConfigurationError("--sources cannot be combined with --device, --source-id or --track-id")
+            if any(value is not None for value in (args.device, args.source_id, args.track_id,
+                                                     args.channel_id)):
+                raise ConfigurationError("--sources cannot be combined with single-source options")
             adapter = MultiAdapter(load_sources(args.sources), endpoint=args.endpoint,
                                    authorization=authorization)
         else:
             adapter = Adapter(endpoint=args.endpoint, authorization=authorization,
-                              track_id=args.track_id, source_id=args.source_id, device=args.device)
+                              track_id=args.track_id, source_id=args.source_id, device=args.device,
+                              channel_id=args.channel_id)
         run(adapter, args.gpsd_host, args.gpsd_port)
     except (ConfigurationError, RegistryError, OSError) as exc:
         parser.exit(1, f"cartochron-gpsd: {exc}\n")

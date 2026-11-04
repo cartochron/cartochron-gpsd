@@ -10,6 +10,7 @@ import tomllib
 
 SOURCE_ID = re.compile(r"src_[0-9a-f]{24}\Z")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+CHANNEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 MAX_SOURCES = 256
 
 
@@ -22,6 +23,7 @@ class Source:
     name: str
     device: str
     source_id: str | None
+    channel_id: str | None = None
 
 
 def load_sources(filename):
@@ -36,13 +38,18 @@ def load_sources(filename):
     entries = document["sources"]
     if not 1 <= len(entries) <= MAX_SOURCES:
         raise RegistryError(f"registry must contain 1..{MAX_SOURCES} sources")
-    result, devices, identities = [], set(), set()
+    result, devices, identities, channels = [], set(), set(), set()
     for name, entry in entries.items():
         if not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(entry, dict):
             raise RegistryError("invalid source name or mapping")
-        if set(entry) - {"device", "source_id"} or "device" not in entry:
-            raise RegistryError(f"{name}: expected device and optional source_id only")
+        if set(entry) - {"device", "source_id", "channel_id"} or "device" not in entry:
+            raise RegistryError(f"{name}: expected device and optional source_id/channel_id")
         device, source_id = entry["device"], entry.get("source_id")
+        # The registry key is stable across restarts and UDP port changes.
+        # A globally unique override is useful when collectors share a receiver.
+        channel_id = entry.get("channel_id", name)
+        if not isinstance(channel_id, str) or not CHANNEL_ID.fullmatch(channel_id):
+            raise RegistryError(f"{name}: channel_id must be 1..64 portable characters")
         if (not isinstance(device, str) or not 1 <= len(device) <= 255 or
                 any(ord(ch) < 33 or ord(ch) > 126 for ch in device)):
             raise RegistryError(f"{name}: invalid GPSD device path")
@@ -53,10 +60,11 @@ def load_sources(filename):
         if source_id is not None and (not isinstance(source_id, str) or
                                       not SOURCE_ID.fullmatch(source_id)):
             raise RegistryError(f"{name}: source_id must be an enrolled src_ identifier or empty")
-        if device in devices or (source_id is not None and source_id in identities):
-            raise RegistryError(f"{name}: duplicate GPSD device or source_id")
+        if device in devices or channel_id in channels or (source_id is not None and source_id in identities):
+            raise RegistryError(f"{name}: duplicate GPSD device, channel_id or source_id")
         devices.add(device)
+        channels.add(channel_id)
         if source_id is not None:
             identities.add(source_id)
-        result.append(Source(name, device, source_id))
+        result.append(Source(name, device, source_id, channel_id))
     return result

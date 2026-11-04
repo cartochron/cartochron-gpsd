@@ -85,6 +85,7 @@ class CartochronIntegrationTest(unittest.TestCase):
                     listing = receiver.store.tracks()["tracks"]
                     self.assertEqual(listing[0]["track_id"], "gpsd-integration")
                     self.assertEqual(listing[0]["source_id"], source_id)
+                    self.assertIsNone(listing[0]["channel_id"])
                 finally:
                     receiver.shutdown()
                     receiver.server_close()
@@ -130,6 +131,7 @@ class CartochronIntegrationTest(unittest.TestCase):
                 runs = receiver.store.tracks()["tracks"]
                 self.assertEqual(len(runs), 2)
                 self.assertTrue(all(r["source_id"] is None for r in runs))
+                self.assertEqual({r["channel_id"] for r in runs}, {"oneplus", "lg"})
                 self.assertEqual(receiver.store.sources()["sources"], [])
                 self.assertEqual({p["track_id"] for p in runs},
                                  {a.track_id for a in collector.adapters.values()})
@@ -203,6 +205,7 @@ class CartochronIntegrationTest(unittest.TestCase):
                 runs = receiver.store.tracks()["tracks"]
                 self.assertEqual(len(runs), 2)
                 self.assertEqual({r["source_id"] for r in runs}, {first, second})
+                self.assertEqual({r["channel_id"] for r in runs}, {"oneplus", "lg"})
                 self.assertEqual({r["track_id"] for r in runs},
                                  {a.track_id for a in collector.adapters.values()})
             finally:

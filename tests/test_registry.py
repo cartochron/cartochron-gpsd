@@ -32,6 +32,26 @@ source_id = "{B}"
         self.assertEqual([(s.name, s.device, s.source_id) for s in sources], [
             ('oneplus', 'udp://*:29998', A), ('lg', 'udp://*:29999', B)])
 
+    def test_channel_name_is_stable_across_input_port_changes(self):
+        first = self.load('[sources.oneplus]\ndevice="udp://*:29998"\n')
+        second = self.load('[sources.oneplus]\ndevice="udp://*:30001"\n')
+        self.assertEqual(first[0].channel_id, "oneplus")
+        self.assertEqual(second[0].channel_id, "oneplus")
+        selected = self.load('[sources.oneplus]\ndevice="udp://*:29998"\n'
+                             'channel_id="lab.oneplus"\n')
+        self.assertEqual(selected[0].channel_id, "lab.oneplus")
+
+    def test_duplicate_or_invalid_channel_ids_are_rejected(self):
+        for field in ('channel_id=""', 'channel_id="bad name"',
+                      'channel_id="x"' + 'a' * 64 + '"', 'channel_id=123'):
+            with self.subTest(field=field), self.assertRaises(RegistryError):
+                self.load('[sources.oneplus]\ndevice="udp://*:29998"\n' + field)
+        with self.assertRaisesRegex(RegistryError, "duplicate"):
+            self.load('[sources.oneplus]\ndevice="udp://*:29998"\n'
+                      'channel_id="lab.oneplus"\n'
+                      '[sources.lg]\ndevice="udp://*:29999"\n'
+                      'channel_id="lab.oneplus"\n')
+
     def test_missing_or_guessed_identity_fails(self):
         for content in ('',
                         '[sources.oneplus]\ndevice="udp://*:29998"\nsource_id="oneplus"\n',
