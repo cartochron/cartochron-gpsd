@@ -1,0 +1,47 @@
+# Linux-host deployment: the collector uses host networking to reach a Cartochron
+# receiver published on 127.0.0.1:8765 and GPSD published on 127.0.0.1:2947.
+services:
+  gpsd:
+    build:
+      context: .
+      dockerfile: gpsd/Dockerfile
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/run, /tmp]
+    environment:
+      GPSD_UDP_PORT_RANGE: ${GPSD_UDP_PORT_RANGE:-29998-30017}
+    volumes:
+      - ./sources.toml:/etc/cartochron/sources.toml:ro
+    ports:
+      - "127.0.0.1:2947:2947/tcp"
+      - "${GPSD_BIND_IP:-127.0.0.1}:${GPSD_UDP_PORT_RANGE:-29998-30017}:${GPSD_UDP_PORT_RANGE:-29998-30017}/udp"
+
+  collector:
+    build: .
+    restart: unless-stopped
+    depends_on: [gpsd]
+    network_mode: host
+    user: "${COLLECTOR_UID:-1000}:${COLLECTOR_GID:-1000}"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./sources.toml:/etc/cartochron/sources.toml:ro
+      - ${CARTOCHRON_AUTH_FILE:-../cartochron/data/auth}:/run/secrets/cartochron_auth:ro
+    command:
+      - python3
+      - /app/cartochron_gpsd.py
+      - --gpsd-host
+      - 127.0.0.1
+      - --gpsd-port
+      - "2947"
+      - --endpoint
+      - ${CARTOCHRON_ENDPOINT:-http://127.0.0.1:8765/api/position}
+      - --auth-file
+      - /run/secrets/cartochron_auth
+      - --sources
+      - /etc/cartochron/sources.toml
