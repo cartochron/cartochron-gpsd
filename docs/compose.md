@@ -38,7 +38,13 @@ Docker Desktop or a shared/untrusted Docker host.
    cp .env.example .env
    ```
 
-   The example registry works as-is for two *unassigned* lab inputs:
+   The example registry works as-is for two *unassigned* lab inputs. Its
+   `[sources.oneplus]` and `[sources.lg]` keys are stable channel IDs: each
+   new collector run has a fresh `track_id` but keeps the same `channel_id`.
+   When multiple collectors send to one receiver, configure distinct IDs
+   such as `channel_id = "labA.oneplus"`. This is an input association, not a
+   verified phone identity. Upgrade Cartochron to schema v4 **first**, after
+   backing up its SQLite database; older receivers ignore the new field.
 
    ```toml
    [sources.oneplus]

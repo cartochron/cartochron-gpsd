@@ -52,6 +52,13 @@ Open <http://127.0.0.1:8765> to view observations. The receiver above uses
 **in-memory history**, lost when the server stops. Use Cartochron's documented
 `--db` option or Compose deployment for persistence.
 
+For multi-source deployments, the registry now also sends a persistent
+`channel_id` per input. This does not require Cartochron source enrollment.
+**Upgrade the Cartochron receiver to schema v4 before the GPSD adapter**: the
+adapter checks that the receiver acknowledges its channel identifier and
+stops if an older receiver discards it. Back up persistent SQLite first.
+The channel is a configured input identity, not proof of which phone sent NMEA.
+
 The adapter creates a **new random recording-run ID** each time it starts,
 prints it on startup, and keeps it across transient GPSD reconnects. To
 associate separate runs with one operator-enrolled source, supply `--source-id`
@@ -150,6 +157,7 @@ Each accepted HTTP observation contains:
 | `accuracy_m` | Optional GPSD `eph` horizontal error estimate |
 | `track_id` | Random per adapter process, or operator-provided |
 | `source_id` | Optional operator-enrolled ID |
+| `channel_id` | Optional configured input ID (registry mode uses its stable key) |
 
 Cartochron separately records **server receipt time**. GPSD's fix time may
 be inaccurate before satellite synchronization, and its error estimate has

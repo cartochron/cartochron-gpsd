@@ -4,6 +4,7 @@
 
 [sources.oneplus]
 device = "udp://*:29998"
+# channel_id = "lab.oneplus"  # Optional override; default is registry name.
 source_id = ""
 
 [sources.lg]
